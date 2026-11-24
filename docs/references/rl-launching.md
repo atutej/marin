@@ -403,6 +403,82 @@ A checkpoint already at or beyond the target completes without another update.
 Set `reset_global_step_on_resume=true` to count a new stage from zero instead;
 this leaves the restored optimizer and scheduler state intact.
 
+## Launch on a Slurm cluster
+
+`marinskyrl slurm launch` runs a launch config through `SlurmBackend` instead of Iris: one `sbatch` job, one
+task per node, whole nodes. The config needs a `slurm:` section, and `slurm launch` refuses one without it;
+`iris launch` refuses a config that has one. The backend has been run on TACC Horizon (GB200, four GPUs per node,
+aarch64).
+
+```bash
+marinskyrl slurm launch --config launch.yaml
+```
+
+`run.submission: wait` blocks until the job ends and reports its Slurm state; `detach` returns after `sbatch`.
+Interrupting a waiting launcher cancels the job with `scancel`.
+
+**Allocation.** `iris.allocation.num_nodes` and `gpus_per_node` size the job (`--exclusive`,
+`--gpus-per-node`), and the role plan is validated against them as for Iris. `iris.cluster`, `iris.cluster_config`
+and `iris.allocation.cpu`, `memory` and `disk` are optional on Slurm; the Iris backend and `run.export_hf` raise an
+error that names any of them left unset.
+
+**`slurm:` settings**
+
+| Field | Meaning |
+|---|---|
+| `run_dir`, `time_limit` | Shared directory for rendered scripts, the config copy and job logs; the value of `sbatch --time` |
+| `runtime_env`, `activation_file` | The environment and runtime file that `cloud/iris/bootstrap_runtime.sh` produces; sourced on every node |
+| `runtime_archive` | Tarball of the environment's `lib` directory (`tar -chf ARCHIVE -C RUNTIME_ENV lib`). When set, every node extracts it and a copy of the checkout into `node_local_dir` (default `/tmp`) and runs from there |
+| `broadcast_runtime_archive` | Default `true`: the batch script sends the archive to every node with `sbcast`, so the shared filesystem serves it once per job |
+| `preflight_files` | Each node reads the first 32 MiB of each file, with a 180 s limit, before staging; a node that cannot fails the job and names itself |
+| `partition`, `account`, `qos`, `reservation`, `constraint`, `cpus_per_task`, `extra_sbatch` | Passed to `sbatch`; `extra_sbatch` takes options such as `--exclude=NODE` |
+| `env` | Non-secret variables exported on every node. The node program starts from a clean environment (`env -i`) that keeps only `HOME`, `USER`, `LOGNAME`, `LANG`, `CUDA_VISIBLE_DEVICES`, `GPU_DEVICE_ORDINAL`, every `SLURM_*` variable and the forwarded secrets, so anything else it needs, such as NCCL settings, is listed here |
+| `forward_env` | Names of secrets taken from the submitting shell. Their values are never written to disk. Keys the config itself requires, such as the Daytona or remote-judge key variables, are forwarded the same way |
+| `advertise_interface`, `poll_interval` | Interface whose IPv4 address Ray advertises (default: the default route); seconds between state polls (default 30) |
+
+`ray.rendezvous_dir` must be an absolute path on a filesystem every node sees. `ray.num_cpus` is optional; when set,
+each node starts Ray with `--num-cpus=N`. Ray otherwise starts one idle worker process per detected CPU.
+
+**Staged runtime.** With `runtime_archive`, the extracted environment and checkout live at `<node_local_dir>/skyrl-$USER`
+and are removed when the node program exits. The path is fixed per user, not per job, because FlashInfer's JIT cache
+records absolute paths; it assumes one job per user on a node, which whole-node allocation gives.
+
+**Not supported on Slurm.** `run.export_hf` and `iris.role_topology` are rejected before submission: the export
+runs as an Iris job, and role topology relies on Iris coscheduling groups.
+
+**Minimal config.** Only the sections that differ from an Iris launch are shown; the rest of the document is the usual
+launch config.
+
+```yaml
+iris:
+  job_name: slurm-smoke
+  allocation: {num_nodes: 1, gpus_per_node: 4, gpu_variant: GB200}
+slurm:
+  run_dir: /shared/runs/slurm
+  time_limit: "01:00:00"
+  partition: gpu
+  runtime_env: /shared/envs/skyrl-megatron
+  activation_file: /shared/envs/skyrl-megatron.runtime.env
+  runtime_archive: /shared/envs/skyrl-megatron-site-packages.tar
+  env:
+    TRITON_CACHE_DIR: /tmp/skyrl-cache/triton
+    TORCHINDUCTOR_CACHE_DIR: /tmp/skyrl-cache/inductor
+ray:
+  spill_backend: local
+  spill_dir: /tmp/skyrl-ray-spill
+  rendezvous_dir: /shared/runs/rendezvous
+  log_dir: /shared/runs/ray-logs
+  num_cpus: 64
+```
+
+**Observed on Horizon.** These are findings from one cluster, listed because each caused a failure or a slowdown:
+
+- A default `srun` step is bound to one core (`TaskPluginParam=cores`). The launcher adds `--cpu-bind=none`; without it every process of the job shared one core and nothing reported an error.
+- A per-user thread limit of 16,384 is below what Ray's default worker count needs on a 144-core node, which is why `ray.num_cpus` exists.
+- `/scratch` is one NFS server. Triton and Inductor caches placed there failed with `Stale file handle` when eight engines compiled at once, so point them at the node-local directory as in the example.
+- An input whose `local_path` equals its `uri` on a shared filesystem is rewritten by every node at once. Give each node its own `local_path` under the node-local directory.
+- Jobs that start together and read the archive and model weights from the shared filesystem start slowly and unevenly. `broadcast_runtime_archive` addresses the archive; the weights still load from the shared filesystem.
+
 ## Pre-launch review
 
 Before submitting a large run:

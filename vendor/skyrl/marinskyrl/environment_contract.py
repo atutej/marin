@@ -582,7 +582,13 @@ class EnvVarManager:
         site_packages: list[str],
     ) -> "EnvVarManager":
         """Resolve Python-wheel CUDA paths and a bounded JIT worker pool for task and Ray worker processes."""
-        nvidia_roots = [Path(root) / "nvidia" for root in site_packages if (Path(root) / "nvidia").is_dir()]
+        # A venv's lib64 symlinks to lib, and site.getsitepackages() lists both on platforms whose platlibdir is lib64.
+        nvidia_by_real_path: dict[Path, Path] = {}
+        for root in site_packages:
+            nvidia = Path(root) / "nvidia"
+            if nvidia.is_dir():
+                nvidia_by_real_path.setdefault(nvidia.resolve(), nvidia)
+        nvidia_roots = list(nvidia_by_real_path.values())
         library_paths = sorted(path for root in nvidia_roots for path in root.glob("*/lib") if path.is_dir())
         cuda_roots = [
             root / CUDA_WHEEL_NAMESPACE for root in nvidia_roots if (root / CUDA_WHEEL_NAMESPACE / "lib").is_dir()

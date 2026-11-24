@@ -4,6 +4,7 @@
 import json
 
 import pytest
+import yaml
 from iris.client.client import IrisContext, iris_ctx_scope
 from iris.cluster.client.job_info import JobInfo, get_job_info, set_job_info
 from iris.cluster.constraints import CLUSTER_CONSTRAINT_KEY
@@ -12,6 +13,7 @@ from iris.rpc import controller_pb2
 from omegaconf import OmegaConf
 
 from cloud.iris import launch
+from cloud.iris.iris_backend import IrisBackend
 from cloud.iris.export_hf_checkpoint import ExportJobSpec, checkpoint_export_launch_config
 from cloud.iris.launch_config import load_launch_config
 from cloud.iris.tests.launch_config_fixtures import raw_launch_config
@@ -152,3 +154,38 @@ def test_nested_launch_uses_parent_controller_and_execution_cluster_defaults(
     assert "nccl_transport_probe.py --mode gate --gate-coverage all-gpus" in shell
     assert "/interconnect-gate; " in shell
     assert ("--pynccl-init" in shell) == (entrypoint != CHECKPOINT_EXPORT_ENTRYPOINT)
+
+
+def _launch_config_path(tmp_path, *, drop_iris_routing: bool):
+    config = raw_launch_config()
+    config["run"]["export_hf"] = False  # HF export validation has its own Iris-settings check
+    config["artifacts"].update(
+        checkpoint_root=str(tmp_path / "checkpoints"),
+        export_root=str(tmp_path / "exports"),
+        attempts_root=str(tmp_path / "attempts"),
+        resolved_config_uri=str(tmp_path / "resolved.yaml"),
+        terminal_manifest_uri=str(tmp_path / "terminal.json"),
+    )
+    config["inputs"]["train_data"] = [
+        {
+            "uri": "s3://data/gsm8k",
+            "identity": "sha256:gsm8k",
+            "local_path": "/tmp/data/gsm8k",
+            "relative_path": "train.parquet",
+            "kind": "directory",
+        }
+    ]
+    if drop_iris_routing:
+        del config["iris"]["cluster"], config["iris"]["cluster_config"]
+        del config["iris"]["allocation"]["memory"]
+    path = tmp_path / "launch.yaml"
+    path.write_text(yaml.safe_dump(config, sort_keys=False))
+    return path
+
+
+def test_iris_launch_without_its_routing_and_pod_resources_is_rejected_before_submission(tmp_path):
+    # These fields are optional in the shared launch schema because Slurm launches omit them.
+    IrisBackend().validate(_launch_config_path(tmp_path, drop_iris_routing=False))
+
+    with pytest.raises(ValueError, match=r"iris\.cluster.*iris\.cluster_config.*iris\.allocation\.memory"):
+        IrisBackend().validate(_launch_config_path(tmp_path, drop_iris_routing=True))

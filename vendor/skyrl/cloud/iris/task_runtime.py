@@ -1228,11 +1228,16 @@ def _ray_mem_flags() -> list[str]:
     return flags
 
 
+def _ray_cpu_flags(num_cpus: int | None) -> list[str]:
+    return [] if num_cpus is None else [f"--num-cpus={num_cpus}"]
+
+
 def ray_start_head(
     head_ip: str,
     spill_target: RaySpillTarget,
     *,
     labels: dict[str, str] | None = None,
+    num_cpus: int | None = None,
 ) -> None:
     spill_target.prepare_node()
     cmd = [
@@ -1246,6 +1251,7 @@ def ray_start_head(
         "--dashboard-host=0.0.0.0",
         *_ray_port_flags(),
         *_ray_mem_flags(),
+        *_ray_cpu_flags(num_cpus),
         *spill_target.head_flags(),
         *([f"--labels={','.join(f'{key}={value}' for key, value in labels.items())}"] if labels else []),
     ]
@@ -1263,6 +1269,7 @@ def ray_start_worker(
     spill_target: RaySpillTarget,
     *,
     labels: dict[str, str] | None = None,
+    num_cpus: int | None = None,
 ) -> None:
     spill_target.prepare_node()
     cmd = [
@@ -1272,6 +1279,7 @@ def ray_start_worker(
         f"--node-ip-address={node_ip}",
         *_ray_port_flags(),
         *_ray_mem_flags(),
+        *_ray_cpu_flags(num_cpus),
         *spill_target.worker_flags(),
         *([f"--labels={','.join(f'{key}={value}' for key, value in labels.items())}"] if labels else []),
     ]
@@ -1978,6 +1986,7 @@ def run_head(
         head_ip,
         resolve_ray_spill_target(args.rendezvous_dir, args.ray_spill_backend, args.ray_spill_dir),
         labels=args.ray_labels,
+        num_cpus=args.ray_num_cpus,
     )
     _log("Ray head bootstrap complete; entering rendezvous / cluster-join phase.")
 
@@ -2102,6 +2111,7 @@ def run_worker(args: argparse.Namespace, *, debug_mode: DebugMode = DebugMode.LI
         node_ip,
         resolve_ray_spill_target(args.rendezvous_dir, args.ray_spill_backend, args.ray_spill_dir),
         labels=args.ray_labels,
+        num_cpus=args.ray_num_cpus,
     )
     wait_for_nodes(ray_address, num_tasks, args.cluster_join_timeout)
     _log(f"Worker rank {rank} joined Ray cluster at {ray_address}; parking until the head finishes.")
@@ -2188,6 +2198,7 @@ def _runtime_namespace(config: DictConfig) -> argparse.Namespace:
     return argparse.Namespace(
         role_topology=derive_launch_topology(_container(config)).role_topology,
         ray_labels={},
+        ray_num_cpus=None if config.ray.num_cpus is None else int(config.ray.num_cpus),
         ray_spill_dir=validate_ray_spill_dir(str(config.ray.spill_dir)),
         ray_spill_backend=RaySpillBackend(str(config.ray.spill_backend)),
         rendezvous_dir=str(config.ray.rendezvous_dir),

@@ -49,7 +49,13 @@ from rigging.config_discovery import find_project_root, resolve_cluster_config
 from rigging.filesystem.cluster_config import get_bucket_location
 from rigging.timing import Duration
 
-from cloud.iris.launch_config import RunMode, SubmissionMode, load_launch_config, validate_launch_config
+from cloud.iris.launch_config import (
+    RunMode,
+    SubmissionMode,
+    load_launch_config,
+    unset_iris_fields,
+    validate_launch_config,
+)
 from cloud.iris.paths import PROJECT_ROOT
 from cloud.iris.runtime_environment import CHECKPOINT_EXPORT_ENTRYPOINT, IRIS_TASK_IMAGE
 from cloud.iris.runtime_environment import RuntimeMode, RuntimeProfile, runtime_profile_for_strategy, task_setup_script
@@ -510,6 +516,8 @@ def _training_export_request(training_config: DictConfig, step: int) -> HFExport
 
 def validate_checkpoint_export(training_config: DictConfig) -> None:
     """Validate the derived policy export without reading a checkpoint or submitting a job."""
+    if unset := unset_iris_fields(training_config.iris):
+        raise ValueError(f"run.export_hf exports through an Iris job, which requires {', '.join(unset)}")
     step = training_config.skyrl.trainer.max_steps
     request = _training_export_request(training_config, step if step is not None else 0)
     export = checkpoint_export_launch_config(training_config, request, _export_job_spec(training_config, request))

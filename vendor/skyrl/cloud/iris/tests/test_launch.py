@@ -130,7 +130,7 @@ def test_wait_does_not_commit_nonterminal_zero_exit_outcome(tmp_path: Path) -> N
     result = execute_launch(_config_path(tmp_path), backend=backend)
 
     assert result.state is LaunchState.FAILED
-    assert result.failure == "Iris job reached submitted"
+    assert result.failure == "Job reached submitted"
     assert not backend.exported
     record = read_attempt(str(tmp_path / "exports"), "attempt-1")
     assert record is not None
@@ -215,7 +215,7 @@ def test_launch_persists_attempt_result_and_exports_only_on_opt_in(
     if outcome.exit_code:
         assert result.state is LaunchState.FAILED
         assert attempt["result"]["state"] == "failed"
-        assert attempt["result"]["failure"] == "Iris job reached failed"
+        assert attempt["result"]["failure"] == "Job reached failed"
         assert not (tmp_path / "terminal.json").exists()
         assert backend.export_jobs == []
         return

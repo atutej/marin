@@ -36,7 +36,7 @@ from iris.rpc import job_pb2
 from omegaconf import DictConfig, OmegaConf
 from rigging.config_discovery import find_project_root
 
-from cloud.iris.launch_config import SubmissionMode, derive_launch_topology, load_launch_config
+from cloud.iris.launch_config import SubmissionMode, derive_launch_topology, load_launch_config, unset_iris_fields
 from cloud.iris.launch import LaunchOutcome
 from cloud.iris.export_hf_checkpoint import export_terminal_policy
 from cloud.iris.submission import submission_client
@@ -258,6 +258,9 @@ def _iris_submission_state(config_path: Path, config: DictConfig) -> SimpleNames
     runtime = raw["runtime"]
     iris = raw["iris"]
     allocation = iris["allocation"]
+    unset = unset_iris_fields(iris)
+    if unset:
+        raise ValueError(f"The Iris backend requires {', '.join(unset)}")
     ray = raw["ray"]
     artifacts = raw["artifacts"]
     inputs = raw["inputs"]

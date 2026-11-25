@@ -137,3 +137,19 @@ def test_local_spill_directory_creation_failure_names_configured_path(tmp_path, 
             "10.0.0.2",
             LocalRaySpillTarget(str(spill_dir)),
         )
+
+
+@pytest.mark.parametrize("role", ["head", "worker"])
+@pytest.mark.parametrize("num_cpus", [None, 8])
+def test_ray_start_limits_cpus_only_when_requested(tmp_path, monkeypatch, role, num_cpus):
+    commands = []
+    monkeypatch.setattr(runtime.subprocess, "run", lambda command, **_kwargs: commands.append(command))
+    target = LocalRaySpillTarget(str(tmp_path / "ray-spill"))
+
+    if role == "head":
+        runtime.ray_start_head("10.0.0.1", target, num_cpus=num_cpus)
+    else:
+        runtime.ray_start_worker("10.0.0.1", 6379, "10.0.0.2", target, num_cpus=num_cpus)
+
+    cpu_flags = [argument for argument in commands[0] if argument.startswith("--num-cpus")]
+    assert cpu_flags == ([] if num_cpus is None else ["--num-cpus=8"])

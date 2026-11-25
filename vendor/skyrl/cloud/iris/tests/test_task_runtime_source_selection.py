@@ -97,6 +97,7 @@ def _runtime_args(
         ray_spill_dir=str(tmp_path / "spill"),
         cluster_join_timeout=1,
         ray_labels={},
+        ray_num_cpus=None,
         role_topology=None,
         driver_liveness_timeout=liveness_timeout,
     )

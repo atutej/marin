@@ -130,6 +130,7 @@ def _worker_args(tmp_path):
         ray_spill_dir=str(tmp_path / "spill"),
         cluster_join_timeout=1,
         ray_labels={},
+        ray_num_cpus=None,
     )
 
 

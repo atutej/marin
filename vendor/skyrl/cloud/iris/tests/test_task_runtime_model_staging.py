@@ -472,16 +472,18 @@ def test_shared_snapshot_keeps_tokenizers_and_templates_and_repairs_truncated_we
     assert AutoTokenizer.from_pretrained(node, local_files_only=True).encode("hello world") == [1, 2]
     truncated = weights[:8]
     shard.write_bytes(truncated)
-    original_get = snapshot.filesystem.get_file
+    # Patch the class, not the instance: a local path resolves to a filesystem created with auto_mkdir, a distinct instance.
+    filesystem_class = type(snapshot.filesystem)
+    original_get = filesystem_class.get_file
     copies = []
 
-    def copy_without_overwriting_live_file(remote, local, **kwargs):
+    def copy_without_overwriting_live_file(self, remote, local, **kwargs):
         copies.append(remote)
         assert shard.read_bytes() == truncated
-        original_get(remote, local, **kwargs)
+        original_get(self, remote, local, **kwargs)
         assert shard.read_bytes() == truncated
 
-    monkeypatch.setattr(snapshot.filesystem, "get_file", copy_without_overwriting_live_file)
+    monkeypatch.setattr(filesystem_class, "get_file", copy_without_overwriting_live_file)
     assert task_runtime.stage_model(full) == node
     assert shard.read_bytes() == weights
     assert shard.stat().st_ino != inode

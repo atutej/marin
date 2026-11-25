@@ -269,9 +269,16 @@ def _write_attempt_receipt(config: DictConfig, result: LaunchResult) -> LaunchRe
 
 
 def execute_launch(
-    config_path: Path, *, backend: LaunchBackend | None = None, forward_env: tuple[str, ...] = ()
+    config_path: Path,
+    *,
+    backend: LaunchBackend | None = None,
+    component: str = "iris",
+    forward_env: tuple[str, ...] = (),
 ) -> LaunchResult:
-    """Execute the lifecycle declared by one resolved launch config."""
+    """Execute the lifecycle declared by one resolved launch config.
+
+    ``component`` names the backend a launch uses when no ``backend`` is injected: ``iris`` or ``slurm``.
+    """
     config = _prepare_config(load_launch_config(config_path))
     previous_path = StoragePath(str(config.artifacts.resolved_config_uri))
     if previous_path.exists():
@@ -283,14 +290,24 @@ def execute_launch(
     if StoragePath(terminal_receipt_uri).exists():
         raise ValueError(f"Terminal manifest is immutable and already exists: {terminal_receipt_uri}")
 
-    if backend is None:
-        # The concrete Iris backend imports the training/export stack. Keep it
-        # outside the CPU-only config validation and launcher import boundary.
+    has_slurm_section = config.get("slurm") is not None
+    active_backend: LaunchBackend
+    if backend is not None:
+        active_backend = backend
+    elif component == "slurm":
+        if not has_slurm_section:
+            raise ValueError("`slurm launch` needs a slurm: section in the launch config")
+        # Concrete backends import the training/export stack. Keep them outside
+        # the CPU-only config validation and launcher import boundary.
+        from cloud.slurm.slurm_backend import SlurmBackend  # noqa: PLC0415
+
+        active_backend = SlurmBackend(forward_env=forward_env)
+    else:
+        if has_slurm_section:
+            raise ValueError("The launch config has a slurm: section; launch it with `slurm launch`, not `iris launch`")
         from cloud.iris.iris_backend import IrisBackend  # noqa: PLC0415
 
-        active_backend: LaunchBackend = IrisBackend(forward_env=forward_env)
-    else:
-        active_backend = backend
+        active_backend = IrisBackend(forward_env=forward_env)
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", encoding="utf-8") as resolved_file:
         OmegaConf.save(config, resolved_file.name, resolve=False)
         resolved_path = Path(resolved_file.name)
@@ -321,11 +338,11 @@ def execute_launch(
             )
 
         if outcome.exit_code != 0:
-            return _record_failure(config, outcome, f"Iris job reached {outcome.job_state}")
+            return _record_failure(config, outcome, f"Job reached {outcome.job_state}")
         if config.run.submission == SubmissionMode.DETACH:
             return _result(config, LaunchState.SUBMITTED, outcome=outcome)
         if outcome.job_state != JobState.SUCCEEDED.value:
-            return _record_failure(config, outcome, f"Iris job reached {outcome.job_state}")
+            return _record_failure(config, outcome, f"Job reached {outcome.job_state}")
         if config.run.export_hf:
             try:
                 active_backend.export_terminal_policy(resolved_path)
@@ -342,7 +359,7 @@ def execute_launch(
         return _record_failure(
             config,
             outcome,
-            f"Successful Iris job did not persist resolved config: {config.artifacts.resolved_config_uri}",
+            f"Successful job did not persist resolved config: {config.artifacts.resolved_config_uri}",
         )
     result = _result(config, LaunchState.SUCCEEDED, outcome=outcome, model=model)
     receipt = _write_attempt_receipt(config, result)
@@ -358,18 +375,18 @@ def execute_launch(
 def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Launch SkyRL from one resolved Hydra config")
     commands = parser.add_subparsers(dest="component", required=True)
-    iris = commands.add_parser("iris")
-    iris_commands = iris.add_subparsers(dest="action", required=True)
-    launch = iris_commands.add_parser("launch")
-    launch.add_argument("--config", required=True, type=Path)
-    launch.add_argument("--forward-env", action="append", default=[], metavar="NAME")
+    for component in ("iris", "slurm"):
+        actions = commands.add_parser(component).add_subparsers(dest="action", required=True)
+        launch = actions.add_parser("launch")
+        launch.add_argument("--config", required=True, type=Path)
+        launch.add_argument("--forward-env", action="append", default=[], metavar="NAME")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = create_parser().parse_args(argv)
     with contextlib.redirect_stdout(sys.stderr):
-        result = execute_launch(args.config, forward_env=tuple(args.forward_env))
+        result = execute_launch(args.config, component=args.component, forward_env=tuple(args.forward_env))
     json.dump(result.model_dump(mode="json"), sys.stdout, sort_keys=True)
     sys.stdout.write("\n")
     return 0 if result.state in {LaunchState.PREPARED, LaunchState.SUBMITTED, LaunchState.SUCCEEDED} else 1

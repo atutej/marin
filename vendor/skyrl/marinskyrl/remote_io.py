@@ -8,6 +8,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 import logging
 from typing import Any, cast, Protocol, runtime_checkable
+from urllib.parse import urlparse
 
 from fsspec.spec import AbstractFileSystem
 from rigging.filesystem.factory import filesystem as create_filesystem
@@ -17,6 +18,7 @@ from rigging.filesystem.storage_path import StoragePath
 
 logger = logging.getLogger(__name__)
 
+LOCAL_URI_SCHEMES = frozenset({"", "file"})
 S3_MULTIPART_PART_BYTES = 64 * 2**20
 S3_MULTIPART_CONCURRENCY = 4
 
@@ -27,7 +29,12 @@ def create_s3_filesystem(**storage_options: Any) -> AbstractFileSystem:
 
 
 def filesystem_and_path(uri: str) -> tuple[AbstractFileSystem, str]:
-    """Resolve a URI through Rigging's guarded fsspec factory."""
+    """Resolve a URI through Rigging's guarded fsspec factory.
+
+    Writes to local paths create missing parent directories, as writes to an object store implicitly do.
+    """
+    if urlparse(uri).scheme in LOCAL_URI_SCHEMES:
+        return url_to_fs(uri, auto_mkdir=True)
     return url_to_fs(uri)
 
 

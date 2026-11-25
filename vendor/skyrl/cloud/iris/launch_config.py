@@ -53,6 +53,7 @@ from cloud.iris.rl_config_translation import (
 )
 from cloud.iris.role_topology import RoleTopology, derive_role_topology
 from cloud.iris.runtime_environment import RuntimeMode, runtime_profile_for_strategy
+from cloud.slurm.config import SlurmConfig
 from marinskyrl.distillation import (
     TeacherModelSpec,
     TeacherSource,
@@ -127,14 +128,17 @@ class NativeCheckpointLocator:
 
 @dataclass
 class IrisAllocationConfig:
-    """Explicit whole-node resources checked against SkyRL placement."""
+    """Explicit whole-node resources checked against SkyRL placement.
+
+    ``cpu``, ``memory`` and ``disk`` size Iris pods; Slurm allocates whole nodes and ignores them.
+    """
 
     num_nodes: int = MISSING
     gpus_per_node: int = MISSING
     gpu_variant: str = MISSING
-    cpu: float = MISSING
-    memory: str = MISSING
-    disk: str = MISSING
+    cpu: float | None = None
+    memory: str | None = None
+    disk: str | None = None
 
 
 @dataclass(frozen=True)
@@ -147,12 +151,29 @@ class LaunchTopology:
     role_topology: RoleTopology | None = None
 
 
+def unset_iris_fields(iris: Mapping[str, Any]) -> list[str]:
+    """Names of the Iris-only settings a launch left unset; the Iris backend and the HF export job need all of them."""
+    allocation = iris["allocation"]
+    values = {
+        "iris.cluster": iris["cluster"],
+        "iris.cluster_config": iris["cluster_config"],
+        "iris.allocation.cpu": allocation["cpu"],
+        "iris.allocation.memory": allocation["memory"],
+        "iris.allocation.disk": allocation["disk"],
+    }
+    return [name for name, value in values.items() if value is None]
+
+
 @dataclass
 class IrisConfig:
-    """Iris routing, allocation, and retry settings."""
+    """Allocation, routing, and retry settings.
 
-    cluster: str = MISSING
-    cluster_config: str = MISSING
+    ``job_name``, ``allocation`` and ``role_topology`` apply to every backend. The other fields apply only to Iris;
+    the Iris backend rejects a launch that leaves its required ones unset.
+    """
+
+    cluster: str | None = None
+    cluster_config: str | None = None
     job_name: str = MISSING
     wandb_entity: str | None = None
     allocation: IrisAllocationConfig = field(default_factory=IrisAllocationConfig)
@@ -177,6 +198,9 @@ class RayConfig:
     rendezvous_timeout: int = 1800
     cluster_join_timeout: int = 1800
     driver_liveness_timeout: int = 9000
+    # Ray starts one worker process per CPU it detects. Set this on hosts that report far more CPUs than the job needs
+    # (for example a 144-core node under a per-user thread limit); leave it unset to use every detected CPU.
+    num_cpus: int | None = None
 
 
 @dataclass
@@ -213,6 +237,7 @@ class SkyRLLaunchConfig:
     run: RunConfig = field(default_factory=RunConfig)
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
     iris: IrisConfig = field(default_factory=IrisConfig)
+    slurm: SlurmConfig | None = None
     ray: RayConfig = field(default_factory=RayConfig)
     artifacts: ArtifactsConfig = field(default_factory=ArtifactsConfig)
     inputs: InputsConfig = field(default_factory=InputsConfig)
@@ -482,6 +507,8 @@ def validate_launch_config(config: DictConfig) -> LaunchTopology:
             "ray rendezvous timeout and cluster join timeout must be positive; "
             "driver liveness timeout cannot be negative"
         )
+    if ray["num_cpus"] is not None and ray["num_cpus"] <= 0:
+        raise ValueError("ray.num_cpus must be positive")
     resolve_ray_spill_target(
         ray["rendezvous_dir"],
         RaySpillBackend(ray["spill_backend"]),

@@ -446,30 +446,24 @@ records absolute paths; it assumes one job per user on a node, which whole-node 
 **Not supported on Slurm.** `run.export_hf` and `iris.role_topology` are rejected before submission: the export
 runs as an Iris job, and role topology relies on Iris coscheduling groups.
 
-**Minimal config.** Only the sections that differ from an Iris launch are shown; the rest of the document is the usual
-launch config.
+**Smoke test.** `vendor/skyrl/cloud/slurm/examples/qwen_smoke.yaml` is a complete launch config for Marin's Qwen3-0.6B smoke
+recipe: one node, four GPUs, one GRPO step. Its header lists every path it uses, all under `/shared`. A test renders it through
+the Slurm backend, so it stays valid. To run it from a `marin` checkout:
 
-```yaml
-iris:
-  job_name: slurm-smoke
-  allocation: {num_nodes: 1, gpus_per_node: 4, gpu_variant: GB200}
-slurm:
-  run_dir: /shared/runs/slurm
-  time_limit: "01:00:00"
-  partition: gpu
-  runtime_env: /shared/envs/skyrl-megatron
-  activation_file: /shared/envs/skyrl-megatron.runtime.env
-  runtime_archive: /shared/envs/skyrl-megatron-site-packages.tar
-  env:
-    TRITON_CACHE_DIR: /tmp/skyrl-cache/triton
-    TORCHINDUCTOR_CACHE_DIR: /tmp/skyrl-cache/inductor
-ray:
-  spill_backend: local
-  spill_dir: /tmp/skyrl-ray-spill
-  rendezvous_dir: /shared/runs/rendezvous
-  log_dir: /shared/runs/ray-logs
-  num_cpus: 64
+```bash
+ROOT=/your/shared/root; ENV=$ROOT/envs/skyrl-runtime
+# 1. the runtime, and the archive the nodes extract
+bash vendor/skyrl/cloud/iris/bootstrap_runtime.sh vendor/skyrl $ENV $ENV.runtime.env megatron production
+tar -chf $ENV-site-packages.tar -C $ENV lib
+# 2. the model and the data
+hf download Qwen/Qwen3-0.6B --revision c1899de289a04d12100db370d81485cdf75e47ca --local-dir $ROOT/models/Qwen3-0.6B
+mkdir -p $ROOT/data/smoke && $ENV/bin/python vendor/skyrl/cloud/slurm/examples/make_smoke_data.py $ROOT/data/smoke/train.parquet
+# 3. point the config at your root and launch (a new attempt_id for every launch)
+sed -e "s#/shared#$ROOT#g" vendor/skyrl/cloud/slurm/examples/qwen_smoke.yaml > launch.yaml
+$ENV/bin/marinskyrl slurm launch --config launch.yaml
 ```
+
+Presets such as Snowball's need more than this config: their recipes, inputs and the cluster-specific changes below.
 
 **Observed on Horizon.** These are findings from one cluster, listed because each caused a failure or a slowdown:
 

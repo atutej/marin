@@ -1,0 +1,149 @@
+# Qwen3-0.6B smoke test of the Slurm launcher: one node, four GPUs, one GRPO step (marin's qwen_megatron_smoke recipe).
+#
+# Every path below starts with /shared: replace it with a directory that all nodes see (sed -e 's#/shared#/your/root#g').
+# Use a new attempt_id for every launch; a finished attempt's records are immutable.
+#
+#   /shared/envs/skyrl-runtime                       the environment from bootstrap_runtime.sh
+#   /shared/envs/skyrl-runtime.runtime.env           the activation file it wrote
+#   /shared/envs/skyrl-runtime-site-packages.tar     tar -chf ARCHIVE -C /shared/envs/skyrl-runtime lib
+#   /shared/models/Qwen3-0.6B                        hf download Qwen/Qwen3-0.6B --revision c1899de289a04d12100db370d81485cdf75e47ca
+#   /shared/data/smoke/train.parquet                 python make_smoke_data.py /shared/data/smoke/train.parquet
+#   /shared/marin                                    this checkout
+#
+# See docs/references/rl-launching.md ("Launch on a Slurm cluster") for the settings and the commands.
+schema_version: 1
+run:
+  id: slurm-smoke
+  attempt_id: attempt-001
+  seed: 42
+  mode: train
+  submission: wait
+  export_hf: false
+runtime:
+  profile: megatron
+  entrypoint: skyrl_train.entrypoints.main_base
+  experiments_dir: /shared/marin/experiments
+iris:
+  job_name: slurm-smoke
+  allocation:
+    num_nodes: 1
+    gpus_per_node: 4
+    gpu_variant: GB200
+slurm:
+  run_dir: /shared/runs/smoke/slurm
+  time_limit: 01:00:00
+  runtime_env: /shared/envs/skyrl-runtime
+  activation_file: /shared/envs/skyrl-runtime.runtime.env
+  runtime_archive: /shared/envs/skyrl-runtime-site-packages.tar
+  node_local_dir: /tmp
+  partition: gpu
+  poll_interval: 15
+  env:
+    NCCL_DEBUG: INFO
+    NCCL_DEBUG_SUBSYS: INIT
+    OMP_NUM_THREADS: '8'
+    MKL_NUM_THREADS: '8'
+    OPENBLAS_NUM_THREADS: '8'
+    NUMEXPR_NUM_THREADS: '8'
+    TOKENIZERS_PARALLELISM: 'false'
+    XDG_CACHE_HOME: /shared/cache
+    TRITON_CACHE_DIR: /tmp/skyrl-cache/triton
+    TORCHINDUCTOR_CACHE_DIR: /tmp/skyrl-cache/inductor
+    FLASHINFER_WORKSPACE_BASE: /shared/cache/flashinfer
+  preflight_files:
+  - /shared/models/Qwen3-0.6B/model.safetensors
+ray:
+  spill_backend: local
+  spill_dir: /tmp/skyrl-ray-spill
+  rendezvous_dir: /shared/runs/smoke/run/attempt-001/rendezvous
+  log_dir: /shared/runs/smoke/run/attempt-001/ray-logs
+artifacts:
+  checkpoint_root: /shared/runs/smoke/artifacts/attempt-001/checkpoints
+  export_root: /shared/runs/smoke/artifacts/attempt-001/exports
+  attempts_root: /shared/runs/smoke/artifacts/attempt-001/attempts
+  resolved_config_uri: /shared/runs/smoke/artifacts/attempt-001/resolved.yaml
+  terminal_manifest_uri: /shared/runs/smoke/artifacts/attempt-001/terminal.json
+inputs:
+  model:
+    uri: /shared/models/Qwen3-0.6B
+    identity: c1899de289a04d12100db370d81485cdf75e47ca
+    local_path: /shared/models/Qwen3-0.6B
+  data_kind: parquet
+  train_data:
+  - kind: directory
+    uri: /shared/data/smoke
+    identity: smoke-arithmetic-v1
+    local_path: /shared/data/smoke
+    relative_path: train.parquet
+  validation_data: []
+skyrl:
+  entrypoint: standard
+  context_budget:
+    request_window_tokens: 2048
+    max_new_tokens_per_turn: 512
+    max_turns: 1
+  environment:
+    env_class: aime
+  trainer:
+    strategy: megatron
+    flash_attn: false
+    use_sample_packing: false
+    gradient_checkpointing: true
+    algorithm:
+      advantage_estimator: grpo
+      use_kl_loss: false
+    epochs: 1
+    max_steps: 1
+    update_epochs_per_batch: 1
+    train_batch_size: 8
+    policy_mini_batch_size: 8
+    eval_batch_size: 8
+    micro_forward_batch_size_per_gpu: 1
+    micro_train_batch_size_per_gpu: 1
+    eval_before_train: false
+    eval_interval: -1
+    ckpt_interval: 1
+    resume_mode: none
+    logger: console
+    policy:
+      optimizer_config:
+        lr: 1.0e-06
+        max_grad_norm: 1.0
+      megatron_config:
+        tensor_model_parallel_size: 1
+        pipeline_model_parallel_size: 1
+        context_parallel_size: 1
+        expert_model_parallel_size: 1
+        expert_tensor_parallel_size: 1
+        optimizer_checkpoint_sharding_type: dp_reshardable
+    placement:
+      colocate_all: true
+      policy_num_nodes: 1
+      policy_num_gpus_per_node: 4
+    distributed:
+      placement_group_timeout_seconds: 7200
+      worker_collective_timeout_seconds: 7200
+  generator:
+    backend: vllm
+    model_dtype: bfloat16
+    vllm_attention_backend: FLASHINFER
+    inference_engine_tensor_parallel_size: 1
+    inference_engine_data_parallel_size: 1
+    inference_engine_expert_parallel_size: 1
+    num_inference_engines: 4
+    n_samples_per_prompt: 2
+    gpu_memory_utilization: 0.7
+    enforce_eager: false
+    run_engines_locally: true
+    weight_sync_backend: nccl
+    sampling_params:
+      temperature: 1.0
+      top_p: 1.0
+    engine_init_timeout_seconds: 7200
+    weight_sync_pause_timeout_seconds: 7200
+  data:
+    kind: parquet
+    train_data: []
+    val_data: []
+  extra_env:
+    PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True

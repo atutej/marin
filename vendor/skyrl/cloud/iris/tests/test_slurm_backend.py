@@ -14,7 +14,7 @@ import yaml
 from cloud.iris import launch
 from cloud.iris.launch import LaunchOutcome, LaunchState, execute_launch
 from cloud.iris.tests.launch_config_fixtures import raw_launch_config
-from cloud.slurm.slurm_backend import SlurmBackend
+from cloud.slurm.slurm_backend import SlurmBackend, render_job
 
 JOB_ID = "4242"
 SECRET = "s3cr3t value with spaces"
@@ -417,3 +417,27 @@ def test_command_line_passes_the_component_to_the_launcher(tmp_path: Path, monke
         assert launch.main([component, "launch", "--config", str(tmp_path / "launch.yaml")]) == 0
 
     assert components == ["iris", "slurm"]
+
+
+EXAMPLE = Path(__file__).resolve().parents[2] / "slurm" / "examples" / "qwen_smoke.yaml"
+
+
+def test_documented_example_config_validates_and_renders_a_job(tmp_path: Path) -> None:
+    # The example in the docs is what a new user starts from, so it must pass the same checks as a real launch.
+    root = tmp_path / "shared"
+    config_path = tmp_path / "launch.yaml"
+    config_path.write_text(EXAMPLE.read_text().replace("/shared", str(root)))
+    (root / "envs" / "skyrl-runtime" / "bin").mkdir(parents=True)
+    _executable(root / "envs" / "skyrl-runtime" / "bin" / "python", "#!/bin/sh\n")
+    (root / "envs" / "skyrl-runtime.runtime.env").write_text("")
+    (root / "envs" / "skyrl-runtime-site-packages.tar").write_bytes(b"")
+    (root / "models" / "Qwen3-0.6B").mkdir(parents=True)
+    (root / "models" / "Qwen3-0.6B" / "model.safetensors").write_bytes(b"")
+
+    backend = SlurmBackend()
+    backend.validate(config_path)
+
+    prepared = backend._prepare(config_path)
+    _node_script, sbatch_script = render_job(prepared, root / "runs" / "smoke" / "slurm" / "attempt-001")
+    assert "#SBATCH --nodes=1" in sbatch_script and "#SBATCH --gpus-per-node=4" in sbatch_script
+    assert f"sbcast --force {root}/envs/skyrl-runtime-site-packages.tar" in sbatch_script

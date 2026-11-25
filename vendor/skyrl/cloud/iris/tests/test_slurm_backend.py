@@ -265,14 +265,15 @@ def test_staged_runtime_runs_from_the_node_local_copy_and_is_removed_afterwards(
     assert list(node_local.iterdir()) == []
 
 
-def test_runtime_archive_is_sent_to_the_nodes_once_by_the_batch_script(
+def test_broadcast_sends_the_runtime_archive_to_the_nodes_once_by_the_batch_script(
     tmp_path: Path, fake_slurm: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Jobs that start together would otherwise each pull the archive per node through the same file server.
     monkeypatch.setenv("FAKE_SECRET", SECRET)
     monkeypatch.setenv("USER", "tester")
 
-    outcome = SlurmBackend().launch(_config_path(tmp_path, staged=True))
+    outcome = SlurmBackend().launch(
+        _config_path(tmp_path, staged=True, slurm_extra={"broadcast_runtime_archive": True})
+    )
 
     node_local = tmp_path / "node-local"
     assert outcome.job_state == "succeeded"
@@ -282,15 +283,19 @@ def test_runtime_archive_is_sent_to_the_nodes_once_by_the_batch_script(
     assert list(node_local.iterdir()) == []  # the staged copy and the broadcast archive are both removed
 
 
-def test_broadcast_can_be_turned_off(tmp_path: Path, fake_slurm: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_runtime_archive_is_read_directly_from_the_shared_filesystem_by_default(
+    tmp_path: Path, fake_slurm: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("FAKE_SECRET", SECRET)
     monkeypatch.setenv("USER", "tester")
 
-    outcome = SlurmBackend().launch(_config_path(tmp_path, staged=True, slurm_extra={"broadcast_runtime_archive": False}))
+    outcome = SlurmBackend().launch(_config_path(tmp_path, staged=True))
 
+    node_local = tmp_path / "node-local"
     assert outcome.job_state == "succeeded"
     assert not (fake_slurm / "sbcast.log").exists()
-    assert Path((fake_slurm / "invocations" / "0.exe").read_text().strip()).is_relative_to(tmp_path / "node-local")
+    assert Path((fake_slurm / "invocations" / "0.exe").read_text().strip()).is_relative_to(node_local)  # still staged on the node
+    assert list(node_local.iterdir()) == []
 
 
 def test_node_that_cannot_read_a_preflight_file_fails_the_job_and_names_itself(
@@ -440,4 +445,4 @@ def test_documented_example_config_validates_and_renders_a_job(tmp_path: Path) -
     prepared = backend._prepare(config_path)
     _node_script, sbatch_script = render_job(prepared, root / "runs" / "smoke" / "slurm" / "attempt-001")
     assert "#SBATCH --nodes=1" in sbatch_script and "#SBATCH --gpus-per-node=4" in sbatch_script
-    assert f"sbcast --force {root}/envs/skyrl-runtime-site-packages.tar" in sbatch_script
+    assert "sbcast" not in sbatch_script  # each node extracts the archive from the shared filesystem

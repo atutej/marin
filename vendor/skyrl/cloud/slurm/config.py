@@ -30,9 +30,10 @@ class SlurmConfig:
     It must include the linker names that ``bootstrap_runtime.sh`` adds beside site-packages, for example
     ``libcudart.so``. When set, every node extracts it and the repository checkout into ``node_local_dir`` before
     starting, because imports from a shared filesystem are slow."""
-    broadcast_runtime_archive: bool = True
-    """Send ``runtime_archive`` to every node with ``sbcast`` from the batch script, so the shared filesystem serves it
-    once per job and not once per node. Jobs that start together otherwise all pull it through the same file server."""
+    broadcast_runtime_archive: bool = False
+    """Send ``runtime_archive`` to every node with ``sbcast`` from the batch script instead of letting each node extract it
+    straight from the shared filesystem. Off by default: on TACC Horizon, ``sbcast`` of a 17 GB archive to 10 nodes took
+    about 11 minutes, while staging with direct reads took under one minute when nothing else was running."""
     preflight_files: list[str] = field(default_factory=list)
     """Files each node reads the first 32 MiB of, with a 180 s limit, before staging anything. A node that cannot read
     them (for example model weights on a stalled mount) fails the job within minutes and names itself."""

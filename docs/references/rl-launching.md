@@ -472,6 +472,7 @@ Presets such as Snowball's need more than this config: their recipes, inputs and
 - `/scratch` is one NFS server. Triton and Inductor caches placed there failed with `Stale file handle` when eight engines compiled at once, so point them at the node-local directory as in the example.
 - An input whose `local_path` equals its `uri` on a shared filesystem is rewritten by every node at once. Give each node its own `local_path` under the node-local directory.
 - Jobs that start together and read the archive and model weights from the shared filesystem start slowly and unevenly. `broadcast_runtime_archive` addresses the archive; the weights still load from the shared filesystem.
+- Small-file writes on the shared filesystem can be very slow (200 tiny files took 56 s to create and delete in one measurement, against 0.01 s on node-local disk). A 25-update Snowball run leaves about 8,400 files there, 89% of them Ray logs: each node uploads the logs that grew every 300 s, so the same files are rewritten. Set `OT_AGENT_RAY_LOG_SYNC_INTERVAL_S` in `slurm.env` to upload less often (the final upload at teardown still runs), or `OT_AGENT_RAY_LOG_SYNC=0` to upload nothing; the node-local Ray logs are lost when the allocation ends. Keep package caches such as `uv`'s on node-local disk too.
 
 ## Pre-launch review
 
